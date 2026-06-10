@@ -11,6 +11,8 @@ import type {
 import { getVisibleTools } from "./tools-registry.js";
 import { timingSafeCompare } from "../auth.js";
 import { getAgentId, isAgentScopeIsolated } from "../config.js";
+import { isSlotsEnabled } from "../functions/slots.js";
+import { logger } from "../logger.js";
 
 type McpResponse = {
   status_code: number;
@@ -83,6 +85,23 @@ export function registerMcpEndpoints(
       }
 
       const { name, arguments: args = {} } = req.body;
+
+      // memory_slot_* tools depend on mem::slot-* functions, which are only
+      // registered when AGENTMEMORY_SLOTS=true (src/index.ts). Without this
+      // guard the trigger throws "no function" and surfaces as an opaque 500.
+      // Mirrors the HTTP trigger behaviour from #678 (503 + enableHow).
+      if (name.startsWith("memory_slot_") && !isSlotsEnabled()) {
+        return {
+          status_code: 503,
+          body: {
+            error: "Memory slots not enabled",
+            flag: "AGENTMEMORY_SLOTS",
+            enableHow:
+              "Set AGENTMEMORY_SLOTS=true (in ~/.agentmemory/.env or the shell) and restart.",
+            docsHref: "https://github.com/rohitg00/agentmemory#memory-slots",
+          },
+        };
+      }
 
       try {
         switch (name) {
@@ -1264,6 +1283,12 @@ export function registerMcpEndpoints(
             };
         }
       } catch (err) {
+        // Keep the response opaque but log the cause; silent 500s made
+        // failures like unregistered mem::slot-* functions undiagnosable.
+        logger.error("mcp tool call failed", {
+          tool: name,
+          error: err instanceof Error ? err.message : String(err),
+        });
         return {
           status_code: 500,
           body: {

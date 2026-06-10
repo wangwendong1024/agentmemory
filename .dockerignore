@@ -1,0 +1,17 @@
+# 白名单模式：默认全部排除，只放行 deploy/local/Dockerfile 构建所需内容，
+# 避免把 .git / website / docs / 测试数据等大目录送进构建上下文。
+*
+!package.json
+!tsconfig.json
+!tsdown.config.ts
+!src
+!plugin
+!iii-config.yaml
+!iii-config.docker.yaml
+!docker-compose.yml
+!.env.example
+!LICENSE
+!README.md
+!AGENTS.md
+!deploy/coolify/entrypoint.sh
+!deploy/local

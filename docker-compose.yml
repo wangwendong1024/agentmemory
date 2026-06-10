@@ -1,28 +1,36 @@
 services:
-  # 自包含 agentmemory 服务：基于 deploy/coolify/Dockerfile 构建。
-  # 该镜像 = node:22-slim + npm 安装 @agentmemory/agentmemory + 复制 iii 引擎二进制。
+  # 自包含 agentmemory 服务：基于 deploy/local/Dockerfile 从本仓库源码构建
+  # （含本地修复，未依赖 npm 发布版；发布版构建见 deploy/coolify/Dockerfile）。
+  # 镜像 = node:22-slim + 本地源码 npm pack 安装 + 复制 iii 引擎二进制。
   # 容器内 entrypoint 会：①把 iii config 重写为绑定 0.0.0.0 + 绝对 /data 路径；
   # ②chown /data 给运行用户；③首次启动生成 HMAC 密钥写入 /data/.hmac 并打印一次。
   # 纯 iiidev/iii 引擎镜像不含 agentmemory 代码，无法直接跑，故采用此自建镜像方案。
   agentmemory:
     build:
-      context: ./deploy/coolify
-      dockerfile: Dockerfile
+      context: .                         # 本地源码构建需要仓库根目录作为上下文
+      dockerfile: deploy/local/Dockerfile
       args:
-        AGENTMEMORY_VERSION: "0.9.27"   # 锁定当前最新发布版
         III_VERSION: "0.11.2"           # 引擎锁 0.11.2，勿升级
         III_SDK_VERSION: "0.11.2"
     platform: linux/amd64               # 本机 Intel x86_64
     restart: unless-stopped
     ports:
-      # 3111 暴露到所有网卡：同时服务局域网(192.168.22.59)和 VPN(172.16.0.34)
+      # 3111 = REST/MCP API，暴露到所有网卡：同时服务局域网(192.168.22.59)和 VPN(172.16.0.34)
       - "0.0.0.0:3111:3111"
+      # 3113 = Web Viewer(浏览器界面)，端口固定为 REST 端口+2；供 Windows 等终端用浏览器查看上下文
+      - "0.0.0.0:3113:3113"
     environment:
       # 内置 git 快照备份：开启并落到映射卷，宿主机可直接 git push
       SNAPSHOT_ENABLED: "true"
       SNAPSHOT_DIR: "/data/snapshots"
       # 本地向量嵌入（免费/离线，召回更好）；不需要可删
       EMBEDDING_PROVIDER: "local"
+      # 开启 slot 类记忆（memory_slot_* 工具依赖；关闭时 MCP 调用返回 503）
+      AGENTMEMORY_SLOTS: "true"
+      # Web Viewer 绑定到 0.0.0.0，使其可被局域网/VPN 的浏览器访问（默认仅 127.0.0.1）
+      AGENTMEMORY_VIEWER_HOST: "0.0.0.0"
+      # 非回环绑定时强制要求的 Host 头白名单(防 DNS rebinding)：必须列出实际访问用的 host:port
+      VIEWER_ALLOWED_HOSTS: "192.168.22.59:3113,172.16.0.34:3113,localhost:3113,127.0.0.1:3113"
       # 鉴权密钥由 entrypoint 首次启动自动生成到 /data/.hmac 并打印一次。
       # 如需固定密钥，可创建 /Users/hackintosh/agentmemory/data/.hmac 写入自定义值（chmod 600）。
     volumes:
