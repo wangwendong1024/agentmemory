@@ -1,47 +1,41 @@
 services:
-  # One-shot init container: docker creates named volumes root:root mode
-  # 755, but the iii-engine image is distroless and runs as UID 65532
-  # with no `chown` of its own. Without this, /data is unwritable, the
-  # engine silently buffers in RAM, and state evaporates on every
-  # restart — the exact symptom v0.9.7's working-directory fix set out
-  # to solve. Runs once at compose-up and exits.
-  iii-init:
-    image: busybox:1.36
-    user: "0:0"
-    volumes:
-      - iii-data:/data
-    entrypoint: ["sh", "-c", "chown -R 65532:65532 /data && chmod 755 /data"]
-    restart: "no"
-
-  iii-engine:
-    # Pinned to v0.11.2 — the last engine that runs agentmemory's current
-    # worker model cleanly. v0.11.6 introduces a new sandbox-everything-
-    # via-`iii worker add` model that agentmemory hasn't been refactored
-    # for yet; the architectural mismatch surfaces as EPIPE reconnect
-    # loops and empty search after save. Bump only after agentmemory is
-    # refactored to register as a sandboxed worker.
-    #
-    # Override per-shell or via .env file:
-    #   AGENTMEMORY_III_VERSION=0.11.7 docker compose up
-    image: iiidev/iii:${AGENTMEMORY_III_VERSION:-0.11.2}
-    user: "65532:65532"
-    depends_on:
-      iii-init:
-        condition: service_completed_successfully
-    ports:
-      - "127.0.0.1:49134:49134"
-      - "127.0.0.1:3111:3111"
-      - "127.0.0.1:3112:3112"
-      - "127.0.0.1:9464:9464"
-    volumes:
-      - iii-data:/data
-      - ./iii-config.docker.yaml:/app/config.yaml:ro
+  # 自包含 agentmemory 服务：基于 deploy/coolify/Dockerfile 构建。
+  # 该镜像 = node:22-slim + npm 安装 @agentmemory/agentmemory + 复制 iii 引擎二进制。
+  # 容器内 entrypoint 会：①把 iii config 重写为绑定 0.0.0.0 + 绝对 /data 路径；
+  # ②chown /data 给运行用户；③首次启动生成 HMAC 密钥写入 /data/.hmac 并打印一次。
+  # 纯 iiidev/iii 引擎镜像不含 agentmemory 代码，无法直接跑，故采用此自建镜像方案。
+  agentmemory:
+    build:
+      context: ./deploy/coolify
+      dockerfile: Dockerfile
+      args:
+        AGENTMEMORY_VERSION: "0.9.27"   # 锁定当前最新发布版
+        III_VERSION: "0.11.2"           # 引擎锁 0.11.2，勿升级
+        III_SDK_VERSION: "0.11.2"
+    platform: linux/amd64               # 本机 Intel x86_64
     restart: unless-stopped
+    ports:
+      # 3111 暴露到所有网卡：同时服务局域网(192.168.22.59)和 VPN(172.16.0.34)
+      - "0.0.0.0:3111:3111"
+    environment:
+      # 内置 git 快照备份：开启并落到映射卷，宿主机可直接 git push
+      SNAPSHOT_ENABLED: "true"
+      SNAPSHOT_DIR: "/data/snapshots"
+      # 本地向量嵌入（免费/离线，召回更好）；不需要可删
+      EMBEDDING_PROVIDER: "local"
+      # 鉴权密钥由 entrypoint 首次启动自动生成到 /data/.hmac 并打印一次。
+      # 如需固定密钥，可创建 /Users/hackintosh/agentmemory/data/.hmac 写入自定义值（chmod 600）。
+    volumes:
+      # 数据映射到宿主机硬盘（macOS Docker Desktop 默认共享 /Users）
+      - /Users/hackintosh/agentmemory/data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3111/agentmemory/livez || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 40s
+      retries: 3
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-volumes:
-  iii-data:
